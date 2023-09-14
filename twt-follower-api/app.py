@@ -3,13 +3,14 @@ from flask import Flask, jsonify
 from twitter.scraper import Scraper
 
 with open("cookies.json") as f:
-    cookies = json.load(f)
+    cook = json.load(f)
 
-new = {}
-for cookie in cookies:
-    new[cookie["name"]] = cookie["value"]
+cookies = {}
+for cookie in cook:
+    cookies[cookie["name"]] = cookie["value"]
 
-scraper = Scraper(cookies=new)
+email, username, password, session = "1", "1", "1", None
+scraper = Scraper(password, cookies)
 
 # Initialize Flask app
 app = Flask(__name__)

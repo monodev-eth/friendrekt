@@ -4,3 +4,6 @@
 [submodule "friendrekt-contracts/lib/solmate"]
 	path = friendrekt-contracts/lib/solmate
 	url = https://github.com/transmissions11/solmate
+[submodule "lib/solmate"]
+	path = lib/solmate
+	url = https://github.com/transmissions11/solmate

@@ -4,58 +4,52 @@ mod fasthttp;
 mod math;
 mod prod_kosetto;
 
-use futures::stream;
-use tokio::sync::Mutex;
-use prod_kosetto::{
-    TwitterInfo,
-    User,
-};
 use ethers::{
+	middleware::SignerMiddleware,
 	providers::{Middleware, Provider, StreamExt, Ws},
 	signers::LocalWallet,
-    middleware::SignerMiddleware,
 	signers::Signer,
-    types::{Address, Bytes, Eip1559TransactionRequest, NameOrAddress, H256, U256, U64},
-    types::transaction::eip2930::AccessList,
-    utils::hex
+	types::transaction::eip2930::AccessList,
+	types::{Address, Bytes, Eip1559TransactionRequest, NameOrAddress, H256, U256, U64},
+	utils::hex,
 };
+use futures::stream;
+use prod_kosetto::{TwitterInfo, User};
 use std::{
-    env,
-    collections::HashMap,
-    fs::OpenOptions,
-    io::Write,
-    str::FromStr,
-    sync::Arc,
-    time::Duration,
+	collections::HashMap, env, fs::OpenOptions, io::Write, str::FromStr, sync::Arc, time::Duration,
 };
+use tokio::sync::Mutex;
 
 use bindings::shares::shares::shares;
 use bindings::sniper::sniper::sniper;
 use bset::FIFOCache;
 
+use reqwest::header::USER_AGENT;
+use serde_json::Value;
+
 const MAX: u64 = 100;
 
 /*
-    here's a brief overview of the sniper:
-    there are two tokio threads. 
+	here's a brief overview of the sniper:
+	there are two tokio threads.
 
-    1. listen to every block.
-        for every ETH transfer or bridge relays:
-            reverse search the addresses involved on friend.tech
-            find the number of followers
-            if the address is not cached:
-                cache the address
+	1. listen to every block.
+		for every ETH transfer or bridge relays:
+			reverse search the addresses involved on friend.tech
+			find the number of followers
+			if the address is not cached:
+				cache the address
 
-    2. listen to blast-api eth_newPendingTransactions
-        there are multiple (4?) backend nodes so subscribe a few times
-            (afaict its mostly rng which stream you get)
-            (also run this bot on several geo-distributed servers)
-            if its a first-share-buy (a signup):
-                if the address is cached:
-                    if follow count > 20k: send snipe tx
-                otherwise:
-                    do a live lookup of follow count
-                    if follow count > 20k: send snipe tx
+	2. listen to blast-api eth_newPendingTransactions
+		there are multiple (4?) backend nodes so subscribe a few times
+			(afaict its mostly rng which stream you get)
+			(also run this bot on several geo-distributed servers)
+			if its a first-share-buy (a signup):
+				if the address is cached:
+					if follow count > 20k: send snipe tx
+				otherwise:
+					do a live lookup of follow count
+					if follow count > 20k: send snipe tx
 */
 
 async fn reverse_search(address: Address) -> Option<TwitterInfo> {
@@ -72,9 +66,9 @@ async fn reverse_search(address: Address) -> Option<TwitterInfo> {
 		if resp.status().is_success() {
 			if let Ok(data) = resp.text().await {
 				if let Ok(response) = serde_json::from_str::<User>(&data) {
-					let followers = get_followers(response.twitterUserId.clone()).await;
-                    // Depending on the number of followers, set how 
-                    // much we are willing to pay
+					let followers = get_karma(response.twitterUserId.clone()).await;
+					// Depending on the number of followers, set how
+					// much we are willing to pay
 
 					let supply_limit = match followers {
 						f if f > 1_000_000 => MAX,
@@ -101,16 +95,27 @@ async fn reverse_search(address: Address) -> Option<TwitterInfo> {
 	None
 }
 
-async fn get_followers(id: String) -> u64 {
-	let newurl = format!("http://127.0.0.1:5000/followers/{}", id);
+async fn get_karma(id: String) -> u64 {
+	let newurl = format!("https://www.reddit.com/user/{}/about.json", id);
 	let client = reqwest::Client::new();
-	let resp = client.get(newurl).headers(fasthttp::make_headers()).send().await;
+
+	let resp = client
+		.get(newurl)
+		.header(USER_AGENT, "My Rust Program 1.0")
+		.send()
+		.await;
+
 	if resp.is_err() || !resp.as_ref().unwrap().status().is_success() {
-		println!("Failed to ping follower endpoint");
+		println!("Failed to ping follower endpoint {:?}", resp);
 		return 0;
 	}
 	let data = resp.unwrap().text().await.unwrap();
-	data.parse().unwrap_or(0)
+
+	let mut object: Value = serde_json::from_str(&data).unwrap();
+
+	let k = object.get("data").unwrap().get("total_karma").unwrap();
+
+	serde_json::from_value(k.clone()).unwrap()
 }
 
 use dotenv::dotenv;
@@ -127,7 +132,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let rpc = args[2].clone();
 	let private_key = env::var("PRIVATE_KEY").expect("PRIVATE_KEY must be set in .env");
 	let sniper_address = env::var("SNIPER_ADDRESS").expect("SNIPER_ADDRESS must be set in .env");
-    let ft_address = env::var("FT_ADDRESS").expect("FT_ADDRESS must be set in .env");
+	let ft_address = env::var("FT_ADDRESS").expect("FT_ADDRESS must be set in .env");
 
 	let _httpprovider = Arc::new(Provider::try_from("https://mainnet.base.org").unwrap());
 	let client = Provider::<Ws>::connect(rpc.clone()).await?;
@@ -242,13 +247,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		}
 	});
 
-    enum StreamID {
-        StreamOne(H256),
-        StreamTwo(H256),
-        StreamThree(H256),
-        StreamFour(H256),
-        StreamFive(H256),
-    }
+	enum StreamID {
+		StreamOne(H256),
+		StreamTwo(H256),
+		StreamThree(H256),
+		StreamFour(H256),
+		StreamFive(H256),
+	}
 
 	// PENDING TRANSACTION THREAD
 	// sleep for 1 second
@@ -321,8 +326,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 					}
 					if tx.value == U256::zero()
 						&& tx.to.unwrap() == _friendtech.address()
-                        && tx.input.len() == 68
-						&& tx.input.starts_with(&buy_sig)
+						&& tx.input.len() == 68 && tx.input.starts_with(&buy_sig)
 					{
 						let max_fee = tx.max_fee_per_gas.unwrap();
 						let prio_fee = tx.max_priority_fee_per_gas.unwrap();
@@ -365,7 +369,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 						};
 
 						let binding = share_sniper
-							.snipe_many_shares(
+							.do_snipe_many_shares(
 								vec![tx.from],
 								vec![U256::from(amount)],
 								vec![U256::from(info.supply_limit)],
@@ -419,7 +423,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	});
 
 	// OLD sniping method
-    // Listen to new blocks
+	// Listen to new blocks
 	/*
 	let client = client.clone();
 	tokio::spawn(async move {

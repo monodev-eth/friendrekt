@@ -1,3 +1,6 @@
 friendrekt-contracts/cache/
 friendrekt-contracts/out/
 friendrekt-rs/target/
+twt-follower-api/cookies.json
+twt-follower-api/debug.log
+.env
